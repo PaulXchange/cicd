@@ -1,0 +1,204 @@
+Resources:
+  EC2IAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - s3.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+          - Effect: Allow
+            Principal:
+              Service:
+              - sns.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+          - Effect: Allow
+            Principal:
+              Service:
+              - rds.amazonaws.com
+            Action:
+            - sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              Service:
+              - dynamodb.amazonaws.com
+            Action:
+            - sts:AssumeRole              
+      Path: /
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: s3:*
+                Resource: '*'
+        - PolicyName: SnsAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: sns:*
+                Resource: '*'
+        - PolicyName: RDSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                - rds-db:connect
+                Resource: '*'   
+        - PolicyName: DynamoDbAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Sid: AllAPIActionsOnBooks
+                Action:
+                  - dynamodb:*
+                Resource: '*'                         
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+        - Effect: Allow
+          Principal:
+            Service:
+            - rds.amazonaws.com
+          Action:
+            - sts:AssumeRole
+        - Effect: Allow
+          Principal:
+            Service:
+            - dynamodb.amazonaws.com
+          Action:
+            - sts:AssumeRole   
+      Path: "/"
+      Policies:
+      - PolicyName: LambdaExecution
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:*
+            Resource: arn:aws:logs:*:*:*
+      - PolicyName: RDSAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+              - rds-db:connect
+              Resource: '*'   
+      - PolicyName: DynamoDbAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Sid: AllAPIActionsOnBooks
+              Action:
+                - dynamodb:*
+              Resource: '*'                
+
+  AppBucket:
+    Type: AWS::S3::Bucket  
+
+  SNSTopic:
+    Type: AWS::SNS::Topic
+  SNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn:
+        Ref: SNSTopic
+      Endpoint:
+        Fn::GetAtt:
+        - SQSIntegrationQueue
+        - Arn
+      Protocol: sqs
+      RawMessageDelivery: 'true'
+  SQSIntegrationQueue:
+    Type: AWS::SQS::Queue
+    Properties: {}
+
+  DynamoDBTable: 
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      AttributeDefinitions: 
+        - 
+          AttributeName: "FirstName"
+          AttributeType: "S"
+        - 
+          AttributeName: "LastName"
+          AttributeType: "S"
+      KeySchema: 
+        - 
+          AttributeName: "FirstName"
+          KeyType: "HASH"
+        - 
+          AttributeName: "LastName"
+          KeyType: "RANGE"
+      ProvisionedThroughput: 
+        ReadCapacityUnits: "5"
+        WriteCapacityUnits: "5"           
+      TableName : "user"  
+
+  MyRDSDatabase:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllocatedStorage: '5'
+      DBInstanceClass: db.t2.small
+      Engine: MySQL
+      MasterUsername: Duminda
+      MasterUserPassword: abcd1234
+    DeletionPolicy: Snapshot 
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: !Sub |
+          var response = require('cfn-response');
+          exports.handler = function(event, context) {
+             var responseData = {Value: event.ResourceProperties.List};
+             responseData.Value.push(event.ResourceProperties.AppendedItem);
+             response.send(event, context, response.SUCCESS, responseData);
+          };
+      Runtime: nodejs12.x    
+
+  MyInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: us-east-1a
+      ImageId: ami-a4c7edb2
+      InstanceType: t2.micro
+      IamInstanceProfile: !Ref AppServerInstanceProfile 
+
+  AppServerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+      - Ref: EC2IAMRole   
+
+  GraphQLApi:
+    Type: "AWS::AppSync::GraphQLApi"
+    Properties:
+      Name: AWSAppSync
+      AuthenticationType: AWS_IAM

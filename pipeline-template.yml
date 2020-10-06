@@ -1,0 +1,232 @@
+Resources:
+  CodeRepository:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryDescription: "ReGov App!"
+      RepositoryName: !Sub "${AWS::StackName}"
+
+  ArtifactStoreBucket:
+    Type: AWS::S3::Bucket
+
+  MyPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub '${CodeRepository.Name}-pipeline'
+      RoleArn: !GetAtt MyPipelineRole.Arn
+      ArtifactStore:
+        Location: !Ref ArtifactStoreBucket
+        Type: S3
+      Stages:
+        - 
+          Name: Source
+          Actions:
+            -
+              Name: Checkout
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeCommit
+              OutputArtifacts:
+                -
+                  Name: SourceCode
+              Configuration:
+                BranchName: master
+                RepositoryName: !GetAtt CodeRepository.Name
+              RunOrder: 1
+        -
+          Name: BuildAndPackages
+          Actions:
+            - 
+              Name: Build_Approval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              InputArtifacts: []
+              RunOrder: 1
+            - 
+              Name: CFNPipelinePackages
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref BuildProject
+              InputArtifacts: 
+                - Name: SourceCode
+              OutputArtifacts:
+                - Name: CodeWithPackages
+              RunOrder: 2
+        -  
+          Name: Deploy
+          Actions:
+            - 
+              Name: Deployment_Approval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              InputArtifacts: []
+              RunOrder: 1
+            - 
+              Name: CreateChangeset
+              InputArtifacts:
+                -
+                  Name: CodeWithPackages
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                ChangeSetName: Changes
+                RoleArn: !GetAtt CloudformationRole.Arn
+                Capabilities: CAPABILITY_NAMED_IAM
+                StackName: !Sub "${AWS::StackName}-Deployment"
+                TemplatePath: CodeWithPackages::output.yml
+              RunOrder: 2
+            - Name: ExecuteChangeset
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                RoleArn: !GetAtt CloudformationRole.Arn
+                StackName: !Sub "${AWS::StackName}-Deployment"
+                ChangeSetName: Changes
+                TemplatePath: CodeWithPackages::output.yml
+              RunOrder: 3
+
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:2.0
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: DeploymentBucketName
+            Type: PLAINTEXT
+            Value: !Ref ArtifactStoreBucket
+      Name: !Sub "${AWS::StackName}-buildproject"
+      ServiceRole: !Ref MyPipelineRole
+
+  MyPipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [codepipeline.amazonaws.com]
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+              Service: [codebuild.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: CodePipelineAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                - s3:*
+                - cloudformation:CreateStack
+                - cloudformation:DescribeStacks
+                - cloudformation:DeleteStack
+                - cloudformation:UpdateStack
+                - cloudformation:CreateChangeSet
+                - cloudformation:ExecuteChangeSet
+                - cloudformation:DeleteChangeSet
+                - cloudformation:DescribeChangeSet
+                - cloudformation:SetStackPolicy
+                - sns:ListSubscriptionsByTopic
+                - cloudwatch:*
+                - cloudwatchlogs:*
+                - logs:*
+                - iam:PassRole               
+                - sts:AssumeRole
+                - codecommit:*
+                - apigateway:*
+                Effect: Allow
+                Resource: '*'
+        - PolicyName: CodeCommitAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                - 'codecommit:*'
+                - 'sts:AssumeRole'
+                Effect: Allow
+                Resource: !GetAtt CodeRepository.Arn
+        - PolicyName: CodeBuildAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                - codebuild:*
+                - logs:*
+                Effect: Allow
+                Resource: '*'
+        - PolicyName: CodeDeployAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                - codedeploy:*
+                - logs:*
+                - s3:*
+                Effect: Allow
+                Resource: '*'        
+  
+  CloudformationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [cloudformation.amazonaws.com]
+        Version: '2012-10-17'
+        
+      Path: /
+      Policies:
+        - PolicyName: CloudFormationRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - 'ec2:*'
+                  - codebuild:*
+                  - codedeploy:*
+                  - cloudwatch:*
+                  - logs:*
+                  - s3:*
+                  - codecommit:*
+                  - iam:*
+                  - codepipeline:*
+                  - ecr:*
+                  - SNS:*
+                  - cloudformation:*
+                  - lambda:*
+                  - apigateway:*
+                  - dynamodb:*
+                  - rds:*
+                  - sqs:*
+                  - appsync:*
+                Effect: Allow
+                Resource: '*' 
